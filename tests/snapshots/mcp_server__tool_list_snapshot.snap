@@ -1,0 +1,145 @@
+---
+source: tests/mcp_server.rs
+assertion_line: 34
+expression: summary
+---
+- description: "Returns pressure stall information (PSI) for a cgroup or system-wide. PSI gives the percentage of time tasks were stalled waiting for memory, CPU, or IO over 10s/60s/300s rolling windows — distinguishing 'busy' from 'struggling.' Pass an empty path for the root (system-wide) cgroup, or a relative path like 'system.slice/nginx.service'. Returns three pressure stanzas (memory, cpu, io); each may be null if the controller is not enabled on the targeted cgroup."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      path:
+        default: ""
+        description: "Cgroup path relative to the configured cgroup root.\nUse the empty string `\"\"` for system-wide pressure (the root cgroup).\nExamples: `\"\"`, `\"system.slice\"`, `\"system.slice/nginx.service\"`.\nThe path must not be absolute and must not contain `..` segments."
+        type: string
+    title: GetPressureParams
+    type: object
+  name: get_pressure
+  output_schema:
+    $defs:
+      Pressure:
+        properties:
+          full:
+            anyOf:
+              - $ref: "#/$defs/PressureLine"
+              - type: "null"
+          some:
+            $ref: "#/$defs/PressureLine"
+        required:
+          - some
+        type: object
+      PressureLine:
+        properties:
+          avg10:
+            format: double
+            type: number
+          avg300:
+            format: double
+            type: number
+          avg60:
+            format: double
+            type: number
+          total_usec:
+            format: uint64
+            minimum: 0
+            type: integer
+        required:
+          - avg10
+          - avg60
+          - avg300
+          - total_usec
+        type: object
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      cpu:
+        anyOf:
+          - $ref: "#/$defs/Pressure"
+          - type: "null"
+        description: "CPU pressure: time tasks were stalled waiting for CPU."
+      io:
+        anyOf:
+          - $ref: "#/$defs/Pressure"
+          - type: "null"
+        description: "IO pressure: time tasks were stalled waiting for IO."
+      memory:
+        anyOf:
+          - $ref: "#/$defs/Pressure"
+          - type: "null"
+        description: "Memory pressure: time tasks were stalled waiting for memory."
+      path:
+        description: Echoes the queried cgroup path so the agent can correlate the response.
+        type: string
+    required:
+      - path
+    title: GetPressureResponse
+    type: object
+- description: "Returns the cgroups using the most memory right now under a given subtree, sorted descending by memory.current bytes. Use this to answer 'what's using the most memory.' Pass an empty path for the whole tree, or a relative path like 'system.slice' or 'user.slice' to scope the search. Slices and the root cgroup are excluded from results because their memory.current shows summed descendant memory, not actual leaf consumers. Default n is 10."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      n:
+        default: ~
+        description: "Number of top consumers to return. Defaults to 10. Slices and the\nroot cgroup are always excluded — their memory.current shows the\nsummed memory of all descendants, which would dominate the ranking\nwithout representing actual leaf consumers."
+        format: uint
+        minimum: 0
+        type:
+          - integer
+          - "null"
+      path:
+        default: ""
+        description: "Subtree to search under, relative to the cgroup root. Use the empty\nstring `\"\"` to search the whole tree. Examples: `\"\"`,\n`\"system.slice\"`, `\"user.slice\"`. The path must not be absolute and\nmust not contain `..` segments."
+        type: string
+    title: TopMemoryParams
+    type: object
+  name: top_memory
+  output_schema:
+    $defs:
+      CgroupKind:
+        oneOf:
+          - enum:
+              - root
+              - slice
+              - service
+              - scope
+              - mount
+              - socket
+            type: string
+          - additionalProperties: false
+            properties:
+              other:
+                type: string
+            required:
+              - other
+            type: object
+      TopMemoryEntry:
+        properties:
+          kind:
+            $ref: "#/$defs/CgroupKind"
+            description: "Cgroup kind (typically `service` or `scope`; `slice` and `root` are\nexcluded by this tool)."
+          memory_current_bytes:
+            description: "Current resident memory in bytes (`memory.current`)."
+            format: uint64
+            minimum: 0
+            type: integer
+          path:
+            description: "Path relative to the cgroup root, e.g. `system.slice/nginx.service`."
+            type: string
+        required:
+          - path
+          - kind
+          - memory_current_bytes
+        type: object
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      results:
+        description: "Top consumers, sorted descending by `memory_current_bytes`."
+        items:
+          $ref: "#/$defs/TopMemoryEntry"
+        type: array
+      subtree:
+        description: Echoes the queried subtree path.
+        type: string
+    required:
+      - subtree
+      - results
+    title: TopMemoryResponse
+    type: object
