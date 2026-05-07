@@ -35,12 +35,7 @@ pub fn read_cgroup_tree(root: &Path, max_depth: Option<usize>) -> Result<CgroupN
     walk(root, root, 0, max_depth)
 }
 
-fn walk(
-    root: &Path,
-    dir: &Path,
-    depth: usize,
-    max_depth: Option<usize>,
-) -> Result<CgroupNode> {
+fn walk(root: &Path, dir: &Path, depth: usize, max_depth: Option<usize>) -> Result<CgroupNode> {
     let name = if dir == root {
         String::new()
     } else {

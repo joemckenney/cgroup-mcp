@@ -165,7 +165,10 @@ fn io_stat_tolerates_unknown_kv_fields() {
 #[test]
 fn read_functions_work_against_a_path() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stats");
-    assert_eq!(read_memory_current(&path.join("memory_current")).unwrap(), 6144000);
+    assert_eq!(
+        read_memory_current(&path.join("memory_current")).unwrap(),
+        6144000
+    );
     let cpu = read_cpu_stat(&path.join("cpu_stat_normal")).unwrap();
     assert_eq!(cpu.usage_usec, 5126584);
     let _ = read_memory_stat(&path.join("memory_stat_small")).unwrap();
@@ -183,33 +186,28 @@ fn parses_every_stats_file_in_real_arch() {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
         match name {
             "cpu.stat" => {
-                let _: CpuStat = read_cpu_stat(p).unwrap_or_else(|e| {
-                    panic!("parsing {}: {e:#}", p.display())
-                });
+                let _: CpuStat =
+                    read_cpu_stat(p).unwrap_or_else(|e| panic!("parsing {}: {e:#}", p.display()));
                 counts.0 += 1;
             }
             "memory.current" => {
-                let _: u64 = read_memory_current(p).unwrap_or_else(|e| {
-                    panic!("parsing {}: {e:#}", p.display())
-                });
+                let _: u64 = read_memory_current(p)
+                    .unwrap_or_else(|e| panic!("parsing {}: {e:#}", p.display()));
                 counts.1 += 1;
             }
             "memory.stat" => {
-                let _ = read_memory_stat(p).unwrap_or_else(|e| {
-                    panic!("parsing {}: {e:#}", p.display())
-                });
+                let _ = read_memory_stat(p)
+                    .unwrap_or_else(|e| panic!("parsing {}: {e:#}", p.display()));
                 counts.2 += 1;
             }
             "memory.events" => {
-                let _ = read_memory_events(p).unwrap_or_else(|e| {
-                    panic!("parsing {}: {e:#}", p.display())
-                });
+                let _ = read_memory_events(p)
+                    .unwrap_or_else(|e| panic!("parsing {}: {e:#}", p.display()));
                 counts.3 += 1;
             }
             "io.stat" => {
-                let _ = read_io_stat(p).unwrap_or_else(|e| {
-                    panic!("parsing {}: {e:#}", p.display())
-                });
+                let _ =
+                    read_io_stat(p).unwrap_or_else(|e| panic!("parsing {}: {e:#}", p.display()));
                 counts.4 += 1;
             }
             _ => {}

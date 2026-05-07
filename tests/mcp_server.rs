@@ -60,7 +60,9 @@ async fn get_pressure_for_named_unit_returns_three_psi_stanzas() {
 async fn get_pressure_with_empty_path_targets_the_root_cgroup() {
     let server = CgroupServer::new(real_arch_root());
     let resp = server
-        .get_pressure(Parameters(GetPressureParams { path: String::new() }))
+        .get_pressure(Parameters(GetPressureParams {
+            path: String::new(),
+        }))
         .await
         .expect("system-wide pressure should succeed");
     assert_eq!(resp.0.path, "");
@@ -80,10 +82,7 @@ async fn get_pressure_rejects_absolute_paths() {
         .await
         .err()
         .expect("expected an error");
-    assert!(
-        format!("{err}").contains("absolute"),
-        "error was: {err}"
-    );
+    assert!(format!("{err}").contains("absolute"), "error was: {err}");
 }
 
 #[tokio::test]
@@ -109,10 +108,7 @@ async fn get_pressure_returns_error_for_missing_cgroup() {
         .await
         .err()
         .expect("expected an error");
-    assert!(
-        format!("{err}").contains("not found"),
-        "error was: {err}"
-    );
+    assert!(format!("{err}").contains("not found"), "error was: {err}");
 }
 
 // ---- top_memory ----
@@ -158,7 +154,10 @@ async fn top_memory_returns_services_descending_excluding_slices() {
 
     // Slices must not be present in results.
     assert!(
-        !resp.results.iter().any(|e| e.path.contains("system-getty.slice")),
+        !resp
+            .results
+            .iter()
+            .any(|e| e.path.contains("system-getty.slice")),
         "slice should be excluded"
     );
 }
@@ -174,7 +173,10 @@ async fn top_memory_n_caps_results() {
         .await
         .expect("top_memory n=1");
     assert_eq!(resp.0.results.len(), 1);
-    assert_eq!(resp.0.results[0].path, "system.slice/systemd-journald.service");
+    assert_eq!(
+        resp.0.results[0].path,
+        "system.slice/systemd-journald.service"
+    );
 }
 
 #[tokio::test]

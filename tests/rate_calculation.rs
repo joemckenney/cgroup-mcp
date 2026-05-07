@@ -177,11 +177,7 @@ fn io_counter_regression_on_one_device_flags_reset_for_that_device_only() {
 #[test]
 fn io_rates_are_sorted_by_major_minor_for_determinism() {
     // Provide unsorted input; expect sorted output.
-    let a = vec![
-        iodev(259, 1, 0, 0),
-        iodev(8, 0, 0, 0),
-        iodev(259, 0, 0, 0),
-    ];
+    let a = vec![iodev(259, 1, 0, 0), iodev(8, 0, 0, 0), iodev(259, 0, 0, 0)];
     let b = vec![
         iodev(259, 1, 100, 0),
         iodev(8, 0, 200, 0),

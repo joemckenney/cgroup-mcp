@@ -82,11 +82,10 @@ impl CgroupServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for CgroupServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(
-                "Read-only access to Linux cgroup v2 state (resource accounting and PSI). \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            "Read-only access to Linux cgroup v2 state (resource accounting and PSI). \
                  Tools return structured JSON; the agent does prose. Each call is a \
                  point-in-time snapshot.",
-            )
+        )
     }
 }

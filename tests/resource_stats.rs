@@ -9,8 +9,7 @@ fn real_arch_root() -> PathBuf {
 const CPU_STAT_SAMPLE: &str = "usage_usec 100\nuser_usec 60\nsystem_usec 40\n";
 const MEM_CURRENT_SAMPLE: &str = "1048576\n";
 const MEM_STAT_SAMPLE: &str = "anon 1024\nfile 2048\n";
-const MEM_EVENTS_SAMPLE: &str =
-    "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n";
+const MEM_EVENTS_SAMPLE: &str = "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n";
 const PSI_SAMPLE: &str =
     "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n";
 const IO_STAT_SAMPLE: &str = "8:0 rbytes=100 wbytes=200 rios=10 wios=20 dbytes=0 dios=0\n";
@@ -104,8 +103,7 @@ fn reads_every_captured_real_arch_leaf_service() {
     ];
     for leaf in leaves {
         let path = real_arch_root().join(leaf);
-        let r = read_resource_stats(&path)
-            .unwrap_or_else(|e| panic!("reading {leaf}: {e:#}"));
+        let r = read_resource_stats(&path).unwrap_or_else(|e| panic!("reading {leaf}: {e:#}"));
         assert!(r.cpu_stat.is_some(), "{leaf}: cpu_stat");
         assert!(r.memory_current.is_some(), "{leaf}: memory_current");
         assert!(r.memory_stat.is_some(), "{leaf}: memory_stat");

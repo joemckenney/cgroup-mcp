@@ -177,7 +177,10 @@ fn parse_simple_kv(s: &str) -> Result<BTreeMap<String, u64>> {
             .next()
             .with_context(|| format!("line {}: missing value for {key:?}", lineno + 1))?;
         let value: u64 = value_str.parse().with_context(|| {
-            format!("line {}: parsing value for {key:?}: {value_str:?}", lineno + 1)
+            format!(
+                "line {}: parsing value for {key:?}: {value_str:?}",
+                lineno + 1
+            )
         })?;
         map.insert(key.to_string(), value);
     }

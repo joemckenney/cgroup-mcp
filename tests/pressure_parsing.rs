@@ -51,8 +51,7 @@ fn parses_zero_pressure() {
 
 #[test]
 fn read_pressure_from_path_works() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/pressure/memory_normal");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pressure/memory_normal");
     let p = read_pressure(&path).unwrap();
     assert!(p.full.is_some());
 }

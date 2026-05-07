@@ -52,11 +52,7 @@ fn rejects_non_cgroup_root() {
 
 #[test]
 fn walks_simple_synthetic_tree() {
-    let dir = synthetic_tree(&[
-        "system.slice",
-        "system.slice/foo.service",
-        "user.slice",
-    ]);
+    let dir = synthetic_tree(&["system.slice", "system.slice/foo.service", "user.slice"]);
     let tree = read_cgroup_tree(dir.path(), None).unwrap();
     assert_eq!(tree.kind, CgroupKind::Root);
     assert_eq!(tree.name, "");
@@ -78,11 +74,7 @@ fn skips_non_cgroup_directories() {
     fs::write(dir.path().join("cgroup.controllers"), "").unwrap();
     // a real cgroup child
     fs::create_dir(dir.path().join("real.service")).unwrap();
-    fs::write(
-        dir.path().join("real.service/cgroup.controllers"),
-        "",
-    )
-    .unwrap();
+    fs::write(dir.path().join("real.service/cgroup.controllers"), "").unwrap();
     // a non-cgroup directory (no cgroup.controllers) — should be skipped
     fs::create_dir(dir.path().join("not_a_cgroup")).unwrap();
     fs::write(dir.path().join("not_a_cgroup/random_file"), "").unwrap();
@@ -97,7 +89,10 @@ fn max_depth_zero_returns_root_only_and_marks_truncated() {
     let dir = synthetic_tree(&["system.slice", "system.slice/foo.service"]);
     let tree = read_cgroup_tree(dir.path(), Some(0)).unwrap();
     assert!(tree.children.is_empty());
-    assert!(tree.truncated, "root should be marked truncated when it has children");
+    assert!(
+        tree.truncated,
+        "root should be marked truncated when it has children"
+    );
 }
 
 #[test]
@@ -111,19 +106,21 @@ fn max_depth_zero_on_leaf_is_not_truncated() {
 
 #[test]
 fn max_depth_one_includes_immediate_children_and_marks_them_truncated() {
-    let dir = synthetic_tree(&[
-        "system.slice",
-        "system.slice/foo.service",
-        "user.slice",
-    ]);
+    let dir = synthetic_tree(&["system.slice", "system.slice/foo.service", "user.slice"]);
     let tree = read_cgroup_tree(dir.path(), Some(1)).unwrap();
     assert_eq!(tree.children.len(), 2);
     let sys = &tree.children[0];
     assert_eq!(sys.name, "system.slice");
     assert!(sys.children.is_empty());
-    assert!(sys.truncated, "system.slice has children; should be truncated at depth 1");
+    assert!(
+        sys.truncated,
+        "system.slice has children; should be truncated at depth 1"
+    );
     let user = &tree.children[1];
-    assert!(!user.truncated, "user.slice is empty; should not be truncated");
+    assert!(
+        !user.truncated,
+        "user.slice is empty; should not be truncated"
+    );
 }
 
 #[test]
@@ -184,8 +181,8 @@ fn walks_real_arch_capture() {
         assert_eq!(n.kind, CgroupKind::Service, "{unit} should be a service");
     }
 
-    let nested = find_descendant(&tree, "system.slice/system-getty.slice")
-        .expect("nested slice present");
+    let nested =
+        find_descendant(&tree, "system.slice/system-getty.slice").expect("nested slice present");
     assert_eq!(nested.kind, CgroupKind::Slice);
 }
 
@@ -206,5 +203,8 @@ fn max_depth_against_real_arch() {
         .find(|c| c.name == "system.slice")
         .expect("system.slice");
     assert!(sys.children.is_empty());
-    assert!(sys.truncated, "system.slice has captured services beneath it");
+    assert!(
+        sys.truncated,
+        "system.slice has captured services beneath it"
+    );
 }
