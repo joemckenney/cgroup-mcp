@@ -52,7 +52,7 @@ pub fn run(cgroup_root: &Path, params: TopMemoryParams) -> Result<TopMemoryRespo
 
     let mut entries = Vec::new();
     collect(&tree, &subtree_dir, &params.path, &mut entries)?;
-    entries.sort_by(|a, b| b.memory_current_bytes.cmp(&a.memory_current_bytes));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.memory_current_bytes));
     entries.truncate(n);
 
     Ok(TopMemoryResponse {
