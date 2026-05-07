@@ -1,8 +1,9 @@
 use anyhow::{bail, Context, Result};
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct CgroupNode {
     pub name: String,
     pub relative_path: String,
@@ -12,7 +13,7 @@ pub struct CgroupNode {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CgroupKind {
     Root,

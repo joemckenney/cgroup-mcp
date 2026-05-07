@@ -1,5 +1,7 @@
+use cgroup_mcp::collector::tree::CgroupKind;
 use cgroup_mcp::mcp::server::CgroupServer;
 use cgroup_mcp::mcp::tools::get_pressure::GetPressureParams;
+use cgroup_mcp::mcp::tools::top_memory::TopMemoryParams;
 use rmcp::handler::server::wrapper::Parameters;
 use std::path::{Path, PathBuf};
 
@@ -111,4 +113,129 @@ async fn get_pressure_returns_error_for_missing_cgroup() {
         format!("{err}").contains("not found"),
         "error was: {err}"
     );
+}
+
+// ---- top_memory ----
+
+#[tokio::test]
+async fn top_memory_returns_services_descending_excluding_slices() {
+    // The captured fixture has 3 services and 1 nested slice under
+    // system.slice; the slice has its own memory.current (4.7MiB) but
+    // should not appear because slice memory is summed-descendant memory.
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .top_memory(Parameters(TopMemoryParams {
+            path: String::new(),
+            n: None,
+        }))
+        .await
+        .expect("top_memory should succeed");
+    let resp = resp.0;
+
+    // expected order from the fixture (bytes):
+    //   systemd-journald.service  46_305_280
+    //   NetworkManager.service    24_616_960
+    //   dbus-broker.service        6_144_000
+    //   system-getty.slice         4_923_392  (excluded — is a slice)
+    let names: Vec<_> = resp.results.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "system.slice/systemd-journald.service",
+            "system.slice/NetworkManager.service",
+            "system.slice/dbus-broker.service",
+        ]
+    );
+
+    assert!(
+        resp.results.iter().all(|e| e.kind == CgroupKind::Service),
+        "every result should be a service in this fixture"
+    );
+
+    // Sanity-check the byte values came through unmodified.
+    assert_eq!(resp.results[0].memory_current_bytes, 46_305_280);
+    assert_eq!(resp.results[2].memory_current_bytes, 6_144_000);
+
+    // Slices must not be present in results.
+    assert!(
+        !resp.results.iter().any(|e| e.path.contains("system-getty.slice")),
+        "slice should be excluded"
+    );
+}
+
+#[tokio::test]
+async fn top_memory_n_caps_results() {
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .top_memory(Parameters(TopMemoryParams {
+            path: String::new(),
+            n: Some(1),
+        }))
+        .await
+        .expect("top_memory n=1");
+    assert_eq!(resp.0.results.len(), 1);
+    assert_eq!(resp.0.results[0].path, "system.slice/systemd-journald.service");
+}
+
+#[tokio::test]
+async fn top_memory_with_subtree_returns_paths_relative_to_cgroup_root() {
+    // Searching only under `system.slice` should still produce paths that
+    // include the subtree prefix — agents can pass these straight back to
+    // other tools without re-anchoring.
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .top_memory(Parameters(TopMemoryParams {
+            path: "system.slice".into(),
+            n: None,
+        }))
+        .await
+        .expect("subtree top_memory");
+    assert!(!resp.0.results.is_empty());
+    for entry in &resp.0.results {
+        assert!(
+            entry.path.starts_with("system.slice/"),
+            "expected cgroup-root-relative path, got {}",
+            entry.path
+        );
+    }
+    assert_eq!(resp.0.subtree, "system.slice");
+}
+
+#[tokio::test]
+async fn top_memory_n_larger_than_available_is_fine() {
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .top_memory(Parameters(TopMemoryParams {
+            path: String::new(),
+            n: Some(1000),
+        }))
+        .await
+        .expect("large n");
+    // We only captured 3 services with memory.current; should get all of them.
+    assert_eq!(resp.0.results.len(), 3);
+}
+
+#[tokio::test]
+async fn top_memory_validates_path_like_get_pressure() {
+    let server = CgroupServer::new(real_arch_root());
+
+    let err = server
+        .top_memory(Parameters(TopMemoryParams {
+            path: "/etc".into(),
+            n: None,
+        }))
+        .await
+        .err()
+        .expect("absolute path should fail");
+    assert!(format!("{err}").contains("absolute"));
+
+    let err = server
+        .top_memory(Parameters(TopMemoryParams {
+            path: "system.slice/..".into(),
+            n: None,
+        }))
+        .await
+        .err()
+        .expect("dotdot should fail");
+    assert!(format!("{err}").contains(".."));
 }

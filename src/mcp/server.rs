@@ -1,4 +1,5 @@
 use crate::mcp::tools::get_pressure::{self, GetPressureParams, GetPressureResponse};
+use crate::mcp::tools::top_memory::{self, TopMemoryParams, TopMemoryResponse};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, Json, ServerHandler};
@@ -50,6 +51,29 @@ impl CgroupServer {
         Parameters(params): Parameters<GetPressureParams>,
     ) -> Result<Json<GetPressureResponse>, McpError> {
         get_pressure::run(&self.cgroup_root, params)
+            .map(Json)
+            .map_err(|e| McpError::internal_error(format!("{e:#}"), None))
+    }
+
+    /// Returns the cgroups using the most memory under a subtree, sorted
+    /// descending. Memory.current is a gauge — no rate computation. Slices
+    /// and the root cgroup are excluded since their memory.current is the
+    /// sum of their descendants and would dominate the ranking.
+    #[tool(
+        name = "top_memory",
+        description = "Returns the cgroups using the most memory right now under a given \
+            subtree, sorted descending by memory.current bytes. Use this to answer \
+            'what's using the most memory.' Pass an empty path for the whole tree, or a \
+            relative path like 'system.slice' or 'user.slice' to scope the search. \
+            Slices and the root cgroup are excluded from results because their \
+            memory.current shows summed descendant memory, not actual leaf consumers. \
+            Default n is 10."
+    )]
+    pub async fn top_memory(
+        &self,
+        Parameters(params): Parameters<TopMemoryParams>,
+    ) -> Result<Json<TopMemoryResponse>, McpError> {
+        top_memory::run(&self.cgroup_root, params)
             .map(Json)
             .map_err(|e| McpError::internal_error(format!("{e:#}"), None))
     }
