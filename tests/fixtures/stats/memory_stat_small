@@ -1,0 +1,6 @@
+anon 1048576
+file 524288
+kernel 65536
+slab 16384
+pgfault 100
+pgmajfault 2
