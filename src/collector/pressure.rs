@@ -1,14 +1,15 @@
 use anyhow::{bail, Context, Result};
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct Pressure {
     pub some: PressureLine,
     pub full: Option<PressureLine>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct PressureLine {
     pub avg10: f64,
     pub avg60: f64,

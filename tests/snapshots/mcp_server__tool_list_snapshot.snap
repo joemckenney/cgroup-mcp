@@ -1,0 +1,74 @@
+---
+source: tests/mcp_server.rs
+assertion_line: 32
+expression: summary
+---
+- description: "Returns pressure stall information (PSI) for a cgroup or system-wide. PSI gives the percentage of time tasks were stalled waiting for memory, CPU, or IO over 10s/60s/300s rolling windows — distinguishing 'busy' from 'struggling.' Pass an empty path for the root (system-wide) cgroup, or a relative path like 'system.slice/nginx.service'. Returns three pressure stanzas (memory, cpu, io); each may be null if the controller is not enabled on the targeted cgroup."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      path:
+        default: ""
+        description: "Cgroup path relative to the configured cgroup root.\nUse the empty string `\"\"` for system-wide pressure (the root cgroup).\nExamples: `\"\"`, `\"system.slice\"`, `\"system.slice/nginx.service\"`.\nThe path must not be absolute and must not contain `..` segments."
+        type: string
+    title: GetPressureParams
+    type: object
+  name: get_pressure
+  output_schema:
+    $defs:
+      Pressure:
+        properties:
+          full:
+            anyOf:
+              - $ref: "#/$defs/PressureLine"
+              - type: "null"
+          some:
+            $ref: "#/$defs/PressureLine"
+        required:
+          - some
+        type: object
+      PressureLine:
+        properties:
+          avg10:
+            format: double
+            type: number
+          avg300:
+            format: double
+            type: number
+          avg60:
+            format: double
+            type: number
+          total_usec:
+            format: uint64
+            minimum: 0
+            type: integer
+        required:
+          - avg10
+          - avg60
+          - avg300
+          - total_usec
+        type: object
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      cpu:
+        anyOf:
+          - $ref: "#/$defs/Pressure"
+          - type: "null"
+        description: "CPU pressure: time tasks were stalled waiting for CPU."
+      io:
+        anyOf:
+          - $ref: "#/$defs/Pressure"
+          - type: "null"
+        description: "IO pressure: time tasks were stalled waiting for IO."
+      memory:
+        anyOf:
+          - $ref: "#/$defs/Pressure"
+          - type: "null"
+        description: "Memory pressure: time tasks were stalled waiting for memory."
+      path:
+        description: Echoes the queried cgroup path so the agent can correlate the response.
+        type: string
+    required:
+      - path
+    title: GetPressureResponse
+    type: object
