@@ -1,0 +1,29 @@
+---
+source: tests/cgroup_tree.rs
+assertion_line: 189
+expression: tree
+---
+name: ""
+relative_path: ""
+kind: root
+children:
+  - name: system.slice
+    relative_path: system.slice
+    kind: slice
+    children:
+      - name: NetworkManager.service
+        relative_path: system.slice/NetworkManager.service
+        kind: service
+        children: []
+      - name: dbus-broker.service
+        relative_path: system.slice/dbus-broker.service
+        kind: service
+        children: []
+      - name: system-getty.slice
+        relative_path: system.slice/system-getty.slice
+        kind: slice
+        children: []
+      - name: systemd-journald.service
+        relative_path: system.slice/systemd-journald.service
+        kind: service
+        children: []
