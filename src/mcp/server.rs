@@ -1,5 +1,6 @@
 use crate::mcp::tools::get_pressure::{self, GetPressureParams, GetPressureResponse};
 use crate::mcp::tools::get_unit_stats::{self, GetUnitStatsParams, GetUnitStatsResponse};
+use crate::mcp::tools::recent_oom_events::{self, RecentOomEventsParams, RecentOomEventsResponse};
 use crate::mcp::tools::top_memory::{self, TopMemoryParams, TopMemoryResponse};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -102,6 +103,37 @@ impl CgroupServer {
         Parameters(params): Parameters<GetUnitStatsParams>,
     ) -> Result<Json<GetUnitStatsResponse>, McpError> {
         get_unit_stats::run(&self.cgroup_root, params)
+            .map(Json)
+            .map_err(|e| McpError::internal_error(format!("{e:#}"), None))
+    }
+
+    /// Walks a cgroup subtree and returns every cgroup whose
+    /// memory.events.local has any non-zero counter. Counters are
+    /// CUMULATIVE since the cgroup was created — there is no timestamp,
+    /// so a non-zero count means "this happened at some point," not
+    /// "this happened recently."
+    #[tool(
+        name = "recent_oom_events",
+        description = "Walks a cgroup subtree and returns every cgroup whose \
+            memory.events.local has at least one non-zero counter (low, high, max, oom, \
+            oom_kill, oom_group_kill). Reads .local rather than memory.events so a slice \
+            doesn't appear OOMed when the actual kill happened in a child. \
+            \
+            IMPORTANT: counters are CUMULATIVE since the cgroup was created — they have \
+            no timestamp and no rolling window. A non-zero count means 'this happened at \
+            some point,' not 'this happened recently.' Do not tell the user something \
+            'just' OOMed based on this output. \
+            \
+            Pass an empty path for the whole tree, or a relative path like 'system.slice' \
+            to scope the search. By default returns only cgroups with at least one \
+            non-zero counter; pass include_zero=true to confirm 'nothing has OOMed.' \
+            Results are sorted by oom_kill desc, then oom desc."
+    )]
+    pub async fn recent_oom_events(
+        &self,
+        Parameters(params): Parameters<RecentOomEventsParams>,
+    ) -> Result<Json<RecentOomEventsResponse>, McpError> {
+        recent_oom_events::run(&self.cgroup_root, params)
             .map(Json)
             .map_err(|e| McpError::internal_error(format!("{e:#}"), None))
     }

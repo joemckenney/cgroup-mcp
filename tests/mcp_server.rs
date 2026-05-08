@@ -2,8 +2,10 @@ use cgroup_mcp::collector::tree::CgroupKind;
 use cgroup_mcp::mcp::server::CgroupServer;
 use cgroup_mcp::mcp::tools::get_pressure::GetPressureParams;
 use cgroup_mcp::mcp::tools::get_unit_stats::GetUnitStatsParams;
+use cgroup_mcp::mcp::tools::recent_oom_events::RecentOomEventsParams;
 use cgroup_mcp::mcp::tools::top_memory::TopMemoryParams;
 use rmcp::handler::server::wrapper::Parameters;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 fn real_arch_root() -> PathBuf {
@@ -351,4 +353,196 @@ async fn get_unit_stats_validates_path_like_other_tools() {
         .err()
         .expect("dotdot should fail");
     assert!(format!("{err}").contains(".."), "error was: {err}");
+}
+
+// ---- recent_oom_events ----
+
+/// Build a minimal synthetic tree where each cgroup has a `cgroup.controllers`
+/// marker and an optional `memory.events.local` body. The body string is
+/// written verbatim. None means "no memory.events.local file" (skipped node).
+fn synthetic_oom_tree(entries: &[(&str, Option<&str>)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("cgroup.controllers"), "").unwrap();
+    for (rel, body) in entries {
+        let mut current = dir.path().to_path_buf();
+        for component in Path::new(rel).components() {
+            current.push(component);
+            fs::create_dir_all(&current).unwrap();
+            let marker = current.join("cgroup.controllers");
+            if !marker.exists() {
+                fs::write(marker, "").unwrap();
+            }
+        }
+        if let Some(body) = body {
+            fs::write(current.join("memory.events.local"), body).unwrap();
+        }
+    }
+    dir
+}
+
+#[tokio::test]
+async fn recent_oom_events_filters_zero_and_sorts_by_oom_kill_desc() {
+    // killer.service has the highest oom_kill; spammer.service has high
+    // counts on lower-priority fields; quiet.service is all zero (filtered).
+    let dir = synthetic_oom_tree(&[
+        (
+            "system.slice/killer.service",
+            Some("low 0\nhigh 0\nmax 0\noom 7\noom_kill 5\noom_group_kill 0\n"),
+        ),
+        (
+            "system.slice/spammer.service",
+            Some("low 9\nhigh 9\nmax 0\noom 1\noom_kill 1\noom_group_kill 0\n"),
+        ),
+        (
+            "system.slice/quiet.service",
+            Some("low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"),
+        ),
+    ]);
+    let server = CgroupServer::new(dir.path().to_path_buf());
+    let resp = server
+        .recent_oom_events(Parameters(RecentOomEventsParams {
+            path: String::new(),
+            include_zero: None,
+        }))
+        .await
+        .expect("recent_oom_events should succeed");
+    let resp = resp.0;
+
+    let names: Vec<_> = resp.results.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "system.slice/killer.service",
+            "system.slice/spammer.service",
+        ],
+        "quiet.service should be filtered out; killer outranks spammer on oom_kill"
+    );
+    assert_eq!(resp.results[0].events.oom_kill, 5);
+    assert_eq!(resp.results[1].events.oom_kill, 1);
+}
+
+#[tokio::test]
+async fn recent_oom_events_include_zero_returns_all_cgroups_with_the_file() {
+    let dir = synthetic_oom_tree(&[
+        (
+            "system.slice/quiet.service",
+            Some("low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"),
+        ),
+        (
+            "system.slice/no-events-file.service",
+            None, // present in the tree but missing memory.events.local
+        ),
+    ]);
+    let server = CgroupServer::new(dir.path().to_path_buf());
+    let resp = server
+        .recent_oom_events(Parameters(RecentOomEventsParams {
+            path: String::new(),
+            include_zero: Some(true),
+        }))
+        .await
+        .expect("include_zero should succeed");
+    let names: Vec<_> = resp.0.results.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["system.slice/quiet.service"],
+        "missing memory.events.local => skipped silently; zero counters => kept under include_zero"
+    );
+}
+
+#[tokio::test]
+async fn recent_oom_events_on_healthy_real_arch_is_empty_by_default() {
+    // The captured fixture is a healthy box: every memory.events.local is
+    // all-zero. Default filter should produce an empty list — exactly the
+    // signal an agent wants when answering "did anything OOM."
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .recent_oom_events(Parameters(RecentOomEventsParams {
+            path: String::new(),
+            include_zero: None,
+        }))
+        .await
+        .expect("recent_oom_events should succeed on real_arch");
+    assert!(
+        resp.0.results.is_empty(),
+        "expected empty on healthy fixture, got {:?}",
+        resp.0.results
+    );
+}
+
+#[tokio::test]
+async fn recent_oom_events_with_include_zero_walks_real_arch() {
+    // include_zero=true should surface every cgroup that has the file,
+    // confirming the walk visits the expected cgroups.
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .recent_oom_events(Parameters(RecentOomEventsParams {
+            path: String::new(),
+            include_zero: Some(true),
+        }))
+        .await
+        .expect("walk should succeed");
+    let paths: std::collections::HashSet<_> =
+        resp.0.results.iter().map(|e| e.path.clone()).collect();
+
+    for expected in [
+        "system.slice",
+        "system.slice/dbus-broker.service",
+        "system.slice/NetworkManager.service",
+        "system.slice/systemd-journald.service",
+        "system.slice/system-getty.slice",
+    ] {
+        assert!(
+            paths.contains(expected),
+            "expected {expected} in results, got {paths:?}"
+        );
+    }
+
+    // Every entry on the healthy fixture should be all-zero.
+    for entry in &resp.0.results {
+        assert_eq!(entry.events.oom_kill, 0, "{}", entry.path);
+        assert_eq!(entry.events.oom, 0, "{}", entry.path);
+    }
+}
+
+#[tokio::test]
+async fn recent_oom_events_validates_path_like_other_tools() {
+    let server = CgroupServer::new(real_arch_root());
+
+    let err = server
+        .recent_oom_events(Parameters(RecentOomEventsParams {
+            path: "/etc".into(),
+            include_zero: None,
+        }))
+        .await
+        .err()
+        .expect("absolute path should fail");
+    assert!(format!("{err}").contains("absolute"), "error was: {err}");
+
+    let err = server
+        .recent_oom_events(Parameters(RecentOomEventsParams {
+            path: "system.slice/..".into(),
+            include_zero: None,
+        }))
+        .await
+        .err()
+        .expect("dotdot should fail");
+    assert!(format!("{err}").contains(".."), "error was: {err}");
+}
+
+#[tokio::test]
+async fn recent_oom_events_kind_is_populated() {
+    // Sanity: the entry should reflect the cgroup's parsed kind, not Other.
+    let dir = synthetic_oom_tree(&[(
+        "system.slice/killer.service",
+        Some("low 0\nhigh 0\nmax 0\noom 1\noom_kill 1\noom_group_kill 0\n"),
+    )]);
+    let server = CgroupServer::new(dir.path().to_path_buf());
+    let resp = server
+        .recent_oom_events(Parameters(RecentOomEventsParams {
+            path: String::new(),
+            include_zero: None,
+        }))
+        .await
+        .expect("ok");
+    assert_eq!(resp.0.results[0].kind, CgroupKind::Service);
 }
