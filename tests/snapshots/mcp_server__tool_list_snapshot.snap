@@ -1,6 +1,6 @@
 ---
 source: tests/mcp_server.rs
-assertion_line: 39
+assertion_line: 40
 expression: summary
 ---
 - description: "Returns pressure stall information (PSI) for a cgroup or system-wide. PSI gives the percentage of time tasks were stalled waiting for memory, CPU, or IO over 10s/60s/300s rolling windows — distinguishing 'busy' from 'struggling.' Pass an empty path for the root (system-wide) cgroup, or a relative path like 'system.slice/nginx.service'. Returns three pressure stanzas (memory, cpu, io); each may be null if the controller is not enabled on the targeted cgroup."
@@ -545,6 +545,170 @@ expression: summary
       - sample_window_ms
       - results
     title: TopCpuResponse
+    type: object
+- description: "Returns the cgroups doing the most disk IO under a given subtree, sorted descending by total bytes/sec (read + write) consumed during a sampling window. Use this to answer 'what's hammering disk.' Like top_cpu, this tool BLOCKS for the duration of the sample window (default 500ms): it reads io.stat once, sleeps, and reads again to compute rates. Same tradeoff: shorter windows respond faster but become noisy on bursty IO; longer windows are more stable. Each entry returns aggregate rates (total_bytes_per_sec, rbytes_per_sec, wbytes_per_sec, total_ios_per_sec, rios_per_sec, wios_per_sec) summed across all block devices, plus a per_device array for cases where one cgroup is hammering one disk but quiet elsewhere. Pass an empty path for the whole tree, or a relative path like 'system.slice'. Slices and the root cgroup are excluded from results because their io.stat is summed across descendants. Default n is 10. Cgroups without an enabled IO controller are silently skipped."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      n:
+        default: ~
+        description: "Number of top consumers to return. Defaults to 10. Slices and the\nroot cgroup are always excluded since their io.stat is summed\nacross descendants."
+        format: uint
+        minimum: 0
+        type:
+          - integer
+          - "null"
+      path:
+        default: ""
+        description: "Subtree to search under, relative to the cgroup root. Use the empty\nstring `\"\"` to search the whole tree. Examples: `\"\"`,\n`\"system.slice\"`, `\"user.slice\"`. The path must not be absolute and\nmust not contain `..` segments."
+        type: string
+      sample_window_ms:
+        default: ~
+        description: "Sample window in milliseconds. The tool blocks for this long while\nit reads io.stat twice (before and after) to compute rates.\nDefaults to 500. Same tradeoff as top_cpu: lower values respond\nfaster but become noisy on bursty IO; higher values smooth out at\nthe cost of agent latency."
+        format: uint64
+        minimum: 0
+        type:
+          - integer
+          - "null"
+    title: TopIoParams
+    type: object
+  name: top_io
+  output_schema:
+    $defs:
+      CgroupKind:
+        oneOf:
+          - enum:
+              - root
+              - slice
+              - service
+              - scope
+              - mount
+              - socket
+            type: string
+          - additionalProperties: false
+            properties:
+              other:
+                type: string
+            required:
+              - other
+            type: object
+      TopIoDeviceRate:
+        properties:
+          dbytes_per_sec:
+            description: Discard bytes (TRIM/discard) per second.
+            format: double
+            type: number
+          dios_per_sec:
+            format: double
+            type: number
+          major:
+            description: "Device major number from `io.stat` line."
+            format: uint32
+            minimum: 0
+            type: integer
+          minor:
+            description: "Device minor number from `io.stat` line."
+            format: uint32
+            minimum: 0
+            type: integer
+          rbytes_per_sec:
+            format: double
+            type: number
+          reset_detected:
+            description: True if any counter on this device went backwards.
+            type: boolean
+          rios_per_sec:
+            format: double
+            type: number
+          wbytes_per_sec:
+            format: double
+            type: number
+          wios_per_sec:
+            format: double
+            type: number
+        required:
+          - major
+          - minor
+          - rbytes_per_sec
+          - wbytes_per_sec
+          - rios_per_sec
+          - wios_per_sec
+          - dbytes_per_sec
+          - dios_per_sec
+          - reset_detected
+        type: object
+      TopIoEntry:
+        properties:
+          kind:
+            $ref: "#/$defs/CgroupKind"
+            description: "Cgroup kind (typically `service` or `scope`; `slice` and `root` are\nexcluded by this tool)."
+          path:
+            description: "Path relative to the cgroup root, e.g. `system.slice/nginx.service`."
+            type: string
+          per_device:
+            description: "Per-device breakdown. Useful when one cgroup is hammering a single\ndevice but quiet elsewhere; agents asking \"what's hammering disk\noverall\" can ignore this and read the totals."
+            items:
+              $ref: "#/$defs/TopIoDeviceRate"
+            type: array
+          rbytes_per_sec:
+            description: "Read bytes per second, summed across devices."
+            format: double
+            type: number
+          reset_detected:
+            description: "True if any counter went backwards on any device, typically due to\na cgroup recreation. The aggregate rate fields are 0.0 when this\nis set; per-device entries flag the same condition individually."
+            type: boolean
+          rios_per_sec:
+            description: "Read IOPS, summed across devices."
+            format: double
+            type: number
+          total_bytes_per_sec:
+            description: "Read+write bytes per second across all block devices, derived from\n`io.stat` deltas over the sample window. This is the headline rank\nfield."
+            format: double
+            type: number
+          total_ios_per_sec:
+            description: Read+write IOPS across all devices.
+            format: double
+            type: number
+          wbytes_per_sec:
+            description: "Write bytes per second, summed across devices."
+            format: double
+            type: number
+          wios_per_sec:
+            description: "Write IOPS, summed across devices."
+            format: double
+            type: number
+        required:
+          - path
+          - kind
+          - total_bytes_per_sec
+          - rbytes_per_sec
+          - wbytes_per_sec
+          - total_ios_per_sec
+          - rios_per_sec
+          - wios_per_sec
+          - per_device
+          - reset_detected
+        type: object
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      results:
+        description: "Top consumers, sorted descending by `total_bytes_per_sec`."
+        items:
+          $ref: "#/$defs/TopIoEntry"
+        type: array
+      sample_window_ms:
+        description: "Actual sample window used, in milliseconds."
+        format: uint64
+        minimum: 0
+        type: integer
+      subtree:
+        description: Echoes the queried subtree path.
+        type: string
+    required:
+      - subtree
+      - sample_window_ms
+      - results
+    title: TopIoResponse
     type: object
 - description: "Returns the cgroups using the most memory right now under a given subtree, sorted descending by memory.current bytes. Use this to answer 'what's using the most memory.' Pass an empty path for the whole tree, or a relative path like 'system.slice' or 'user.slice' to scope the search. Slices and the root cgroup are excluded from results because their memory.current shows summed descendant memory, not actual leaf consumers. Default n is 10."
   input_schema:

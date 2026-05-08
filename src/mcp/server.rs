@@ -2,6 +2,7 @@ use crate::mcp::tools::get_pressure::{self, GetPressureParams, GetPressureRespon
 use crate::mcp::tools::get_unit_stats::{self, GetUnitStatsParams, GetUnitStatsResponse};
 use crate::mcp::tools::recent_oom_events::{self, RecentOomEventsParams, RecentOomEventsResponse};
 use crate::mcp::tools::top_cpu::{self, TopCpuParams, TopCpuResponse};
+use crate::mcp::tools::top_io::{self, TopIoParams, TopIoResponse};
 use crate::mcp::tools::top_memory::{self, TopMemoryParams, TopMemoryResponse};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -169,6 +170,42 @@ impl CgroupServer {
         Parameters(params): Parameters<TopCpuParams>,
     ) -> Result<Json<TopCpuResponse>, McpError> {
         top_cpu::run(&self.cgroup_root, params)
+            .await
+            .map(Json)
+            .map_err(|e| McpError::internal_error(format!("{e:#}"), None))
+    }
+
+    /// Returns the cgroups doing the most disk IO under a subtree, sorted
+    /// descending by total bytes/sec consumed during a sampling window.
+    /// Like top_cpu, this tool blocks for the duration of the window
+    /// because IO usage only makes sense as a rate. Per-device breakdown
+    /// is included alongside aggregate totals so the agent can spot a
+    /// cgroup hammering one disk vs distributing load.
+    #[tool(
+        name = "top_io",
+        description = "Returns the cgroups doing the most disk IO under a given subtree, sorted \
+            descending by total bytes/sec (read + write) consumed during a sampling window. \
+            Use this to answer 'what's hammering disk.' \
+            \
+            Like top_cpu, this tool BLOCKS for the duration of the sample window \
+            (default 500ms): it reads io.stat once, sleeps, and reads again to compute \
+            rates. Same tradeoff: shorter windows respond faster but become noisy on \
+            bursty IO; longer windows are more stable. \
+            \
+            Each entry returns aggregate rates (total_bytes_per_sec, rbytes_per_sec, \
+            wbytes_per_sec, total_ios_per_sec, rios_per_sec, wios_per_sec) summed across \
+            all block devices, plus a per_device array for cases where one cgroup is \
+            hammering one disk but quiet elsewhere. Pass an empty path for the whole \
+            tree, or a relative path like 'system.slice'. Slices and the root cgroup are \
+            excluded from results because their io.stat is summed across descendants. \
+            Default n is 10. Cgroups without an enabled IO controller are silently \
+            skipped."
+    )]
+    pub async fn top_io(
+        &self,
+        Parameters(params): Parameters<TopIoParams>,
+    ) -> Result<Json<TopIoResponse>, McpError> {
+        top_io::run(&self.cgroup_root, params)
             .await
             .map(Json)
             .map_err(|e| McpError::internal_error(format!("{e:#}"), None))

@@ -4,6 +4,7 @@ use cgroup_mcp::mcp::tools::get_pressure::GetPressureParams;
 use cgroup_mcp::mcp::tools::get_unit_stats::GetUnitStatsParams;
 use cgroup_mcp::mcp::tools::recent_oom_events::RecentOomEventsParams;
 use cgroup_mcp::mcp::tools::top_cpu::TopCpuParams;
+use cgroup_mcp::mcp::tools::top_io::TopIoParams;
 use cgroup_mcp::mcp::tools::top_memory::TopMemoryParams;
 use rmcp::handler::server::wrapper::Parameters;
 use std::fs;
@@ -808,6 +809,327 @@ async fn top_cpu_validates_path_like_other_tools() {
 
     let err = server
         .top_cpu(Parameters(TopCpuParams {
+            path: "system.slice/..".into(),
+            n: None,
+            sample_window_ms: Some(50),
+        }))
+        .await
+        .err()
+        .expect("dotdot should fail");
+    assert!(format!("{err}").contains(".."), "error was: {err}");
+}
+
+// ---- top_io ----
+
+/// Build a synthetic cgroup tree where each entry gets cgroup.controllers and
+/// an initial io.stat body. Intermediate path components are also marked as
+/// cgroup directories without io.stat (so they show up as kind=Slice).
+fn synthetic_io_tree(entries: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("cgroup.controllers"), "").unwrap();
+    for (rel, io_stat_body) in entries {
+        let mut current = dir.path().to_path_buf();
+        for component in Path::new(rel).components() {
+            current.push(component);
+            fs::create_dir_all(&current).unwrap();
+            let marker = current.join("cgroup.controllers");
+            if !marker.exists() {
+                fs::write(marker, "").unwrap();
+            }
+        }
+        fs::write(current.join("io.stat"), io_stat_body).unwrap();
+    }
+    dir
+}
+
+/// Format a single io.stat line for one device. The kernel uses
+/// `major:minor rbytes=N wbytes=N rios=N wios=N dbytes=N dios=N`.
+fn io_stat_line(major: u32, minor: u32, rbytes: u64, wbytes: u64, rios: u64, wios: u64) -> String {
+    format!(
+        "{major}:{minor} rbytes={rbytes} wbytes={wbytes} rios={rios} wios={wios} dbytes=0 dios=0\n"
+    )
+}
+
+#[tokio::test]
+async fn top_io_ranks_by_total_bytes_and_excludes_slices() {
+    let dir = synthetic_io_tree(&[
+        // initial state: zero across the board
+        (
+            "system.slice/heavy.service",
+            &io_stat_line(8, 0, 0, 0, 0, 0),
+        ),
+        (
+            "system.slice/light.service",
+            &io_stat_line(8, 0, 0, 0, 0, 0),
+        ),
+        // a slice with its own io.stat, should be excluded from results
+        (
+            "system.slice/system-getty.slice",
+            &io_stat_line(8, 0, 0, 0, 0, 0),
+        ),
+    ]);
+    let dir_path = dir.path().to_path_buf();
+    let mutator_path = dir_path.clone();
+
+    // Update io.stat partway through the window.
+    let mutator = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        fs::write(
+            mutator_path.join("system.slice/heavy.service/io.stat"),
+            // 200MB read + 100MB write over 300ms = 1GB/s aggregate
+            io_stat_line(8, 0, 200_000_000, 100_000_000, 50_000, 25_000),
+        )
+        .unwrap();
+        fs::write(
+            mutator_path.join("system.slice/light.service/io.stat"),
+            io_stat_line(8, 0, 1_000_000, 500_000, 100, 50),
+        )
+        .unwrap();
+        // slice growth would dominate but should be excluded
+        fs::write(
+            mutator_path.join("system.slice/system-getty.slice/io.stat"),
+            io_stat_line(8, 0, 999_999_999, 999_999_999, 99_999, 99_999),
+        )
+        .unwrap();
+    });
+
+    let server = CgroupServer::new(dir_path);
+    let resp = server
+        .top_io(Parameters(TopIoParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(300),
+        }))
+        .await
+        .expect("top_io should succeed");
+    mutator.await.unwrap();
+    let resp = resp.0;
+
+    assert_eq!(resp.sample_window_ms, 300);
+    let names: Vec<_> = resp.results.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["system.slice/heavy.service", "system.slice/light.service"],
+        "slice should be excluded; heavy outranks light on total bytes/sec"
+    );
+
+    let heavy = &resp.results[0];
+    // 300_000_000 bytes / 0.3s = 1_000_000_000 bytes/sec
+    assert!(
+        (heavy.total_bytes_per_sec - 1_000_000_000.0).abs() < 1.0,
+        "expected ~1GB/s total, got {}",
+        heavy.total_bytes_per_sec
+    );
+    assert!((heavy.rbytes_per_sec - 200_000_000.0 / 0.3).abs() < 1.0);
+    assert!((heavy.wbytes_per_sec - 100_000_000.0 / 0.3).abs() < 1.0);
+    assert_eq!(heavy.per_device.len(), 1);
+    assert_eq!(heavy.per_device[0].major, 8);
+    assert_eq!(heavy.per_device[0].minor, 0);
+    assert!(!heavy.reset_detected);
+}
+
+#[tokio::test]
+async fn top_io_aggregates_across_multiple_devices() {
+    // Initial: cgroup with two devices, both at zero.
+    let multi_device_initial = format!(
+        "{}{}",
+        io_stat_line(8, 0, 0, 0, 0, 0),
+        io_stat_line(259, 0, 0, 0, 0, 0),
+    );
+    let dir = synthetic_io_tree(&[("system.slice/multi.service", &multi_device_initial)]);
+    let dir_path = dir.path().to_path_buf();
+    let mutator_path = dir_path.clone();
+
+    let mutator = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let after = format!(
+            "{}{}",
+            // 8:0 grew by 100MB read
+            io_stat_line(8, 0, 100_000_000, 0, 1000, 0),
+            // 259:0 grew by 50MB write
+            io_stat_line(259, 0, 0, 50_000_000, 0, 500),
+        );
+        fs::write(
+            mutator_path.join("system.slice/multi.service/io.stat"),
+            after,
+        )
+        .unwrap();
+    });
+
+    let server = CgroupServer::new(dir_path);
+    let resp = server
+        .top_io(Parameters(TopIoParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(250),
+        }))
+        .await
+        .expect("ok");
+    mutator.await.unwrap();
+    let entry = &resp.0.results[0];
+
+    // Aggregate: rbytes from device 1 + wbytes from device 2.
+    assert!((entry.rbytes_per_sec - 100_000_000.0 / 0.25).abs() < 1.0);
+    assert!((entry.wbytes_per_sec - 50_000_000.0 / 0.25).abs() < 1.0);
+    assert!(
+        (entry.total_bytes_per_sec - 150_000_000.0 / 0.25).abs() < 1.0,
+        "totals should sum reads and writes across devices"
+    );
+    assert_eq!(entry.per_device.len(), 2);
+    let dev_8 = entry
+        .per_device
+        .iter()
+        .find(|d| d.major == 8 && d.minor == 0)
+        .expect("device 8:0 in breakdown");
+    let dev_259 = entry
+        .per_device
+        .iter()
+        .find(|d| d.major == 259 && d.minor == 0)
+        .expect("device 259:0 in breakdown");
+    assert!(dev_8.rbytes_per_sec > 0.0 && dev_8.wbytes_per_sec == 0.0);
+    assert!(dev_259.rbytes_per_sec == 0.0 && dev_259.wbytes_per_sec > 0.0);
+}
+
+#[tokio::test]
+async fn top_io_n_caps_results() {
+    let dir = synthetic_io_tree(&[
+        ("system.slice/a.service", &io_stat_line(8, 0, 0, 0, 0, 0)),
+        ("system.slice/b.service", &io_stat_line(8, 0, 0, 0, 0, 0)),
+        ("system.slice/c.service", &io_stat_line(8, 0, 0, 0, 0, 0)),
+    ]);
+    let dir_path = dir.path().to_path_buf();
+    let mutator_path = dir_path.clone();
+    let mutator = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        fs::write(
+            mutator_path.join("system.slice/a.service/io.stat"),
+            io_stat_line(8, 0, 30_000_000, 0, 0, 0),
+        )
+        .unwrap();
+        fs::write(
+            mutator_path.join("system.slice/b.service/io.stat"),
+            io_stat_line(8, 0, 20_000_000, 0, 0, 0),
+        )
+        .unwrap();
+        fs::write(
+            mutator_path.join("system.slice/c.service/io.stat"),
+            io_stat_line(8, 0, 10_000_000, 0, 0, 0),
+        )
+        .unwrap();
+    });
+
+    let server = CgroupServer::new(dir_path);
+    let resp = server
+        .top_io(Parameters(TopIoParams {
+            path: String::new(),
+            n: Some(2),
+            sample_window_ms: Some(250),
+        }))
+        .await
+        .expect("ok");
+    mutator.await.unwrap();
+    assert_eq!(resp.0.results.len(), 2);
+    assert_eq!(resp.0.results[0].path, "system.slice/a.service");
+    assert_eq!(resp.0.results[1].path, "system.slice/b.service");
+}
+
+#[tokio::test]
+async fn top_io_zero_window_is_rejected() {
+    let server = CgroupServer::new(real_arch_root());
+    let err = server
+        .top_io(Parameters(TopIoParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(0),
+        }))
+        .await
+        .err()
+        .expect("zero window should fail");
+    assert!(format!("{err}").contains("> 0"), "error was: {err}");
+}
+
+#[tokio::test]
+async fn top_io_handles_counter_reset() {
+    let dir = synthetic_io_tree(&[(
+        "system.slice/restarter.service",
+        &io_stat_line(8, 0, 1_000_000_000, 500_000_000, 100_000, 50_000),
+    )]);
+    let dir_path = dir.path().to_path_buf();
+    let mutator_path = dir_path.clone();
+    let mutator = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        // counters went backwards = service restart
+        fs::write(
+            mutator_path.join("system.slice/restarter.service/io.stat"),
+            io_stat_line(8, 0, 1_000, 500, 1, 1),
+        )
+        .unwrap();
+    });
+
+    let server = CgroupServer::new(dir_path);
+    let resp = server
+        .top_io(Parameters(TopIoParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(200),
+        }))
+        .await
+        .expect("ok");
+    mutator.await.unwrap();
+    let entry = &resp.0.results[0];
+    assert!(entry.reset_detected, "should flag reset on aggregate");
+    assert_eq!(entry.total_bytes_per_sec, 0.0);
+    assert_eq!(entry.rbytes_per_sec, 0.0);
+    assert_eq!(entry.wbytes_per_sec, 0.0);
+    // The single per-device entry should also report reset.
+    assert_eq!(entry.per_device.len(), 1);
+    assert!(entry.per_device[0].reset_detected);
+}
+
+#[tokio::test]
+async fn top_io_against_real_arch_returns_static_zero_rates() {
+    // io.stat is static in the captured fixture, so deltas are all 0.
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .top_io(Parameters(TopIoParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(60),
+        }))
+        .await
+        .expect("ok");
+    let resp = resp.0;
+    assert_eq!(resp.sample_window_ms, 60);
+    for entry in &resp.results {
+        assert!(
+            !matches!(entry.kind, CgroupKind::Slice | CgroupKind::Root),
+            "slice/root should be excluded: {} ({:?})",
+            entry.path,
+            entry.kind,
+        );
+        assert_eq!(entry.total_bytes_per_sec, 0.0);
+        assert_eq!(entry.total_ios_per_sec, 0.0);
+        assert!(!entry.reset_detected);
+    }
+}
+
+#[tokio::test]
+async fn top_io_validates_path_like_other_tools() {
+    let server = CgroupServer::new(real_arch_root());
+
+    let err = server
+        .top_io(Parameters(TopIoParams {
+            path: "/etc".into(),
+            n: None,
+            sample_window_ms: Some(50),
+        }))
+        .await
+        .err()
+        .expect("absolute path should fail");
+    assert!(format!("{err}").contains("absolute"), "error was: {err}");
+
+    let err = server
+        .top_io(Parameters(TopIoParams {
             path: "system.slice/..".into(),
             n: None,
             sample_window_ms: Some(50),
