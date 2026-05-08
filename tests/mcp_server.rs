@@ -3,10 +3,12 @@ use cgroup_mcp::mcp::server::CgroupServer;
 use cgroup_mcp::mcp::tools::get_pressure::GetPressureParams;
 use cgroup_mcp::mcp::tools::get_unit_stats::GetUnitStatsParams;
 use cgroup_mcp::mcp::tools::recent_oom_events::RecentOomEventsParams;
+use cgroup_mcp::mcp::tools::top_cpu::TopCpuParams;
 use cgroup_mcp::mcp::tools::top_memory::TopMemoryParams;
 use rmcp::handler::server::wrapper::Parameters;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 fn real_arch_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/real_arch")
@@ -545,4 +547,273 @@ async fn recent_oom_events_kind_is_populated() {
         .await
         .expect("ok");
     assert_eq!(resp.0.results[0].kind, CgroupKind::Service);
+}
+
+// ---- top_cpu ----
+
+/// Build a synthetic cgroup tree where each entry gets a `cgroup.controllers`
+/// marker and an initial `cpu.stat` body. Intermediate path components are
+/// also materialized as cgroup directories without cpu.stat (so they show up
+/// as kind=Slice and are ranked-out). Returns the tempdir.
+fn synthetic_cpu_tree(entries: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("cgroup.controllers"), "").unwrap();
+    for (rel, cpu_stat_body) in entries {
+        let mut current = dir.path().to_path_buf();
+        for component in Path::new(rel).components() {
+            current.push(component);
+            fs::create_dir_all(&current).unwrap();
+            let marker = current.join("cgroup.controllers");
+            if !marker.exists() {
+                fs::write(marker, "").unwrap();
+            }
+        }
+        fs::write(current.join("cpu.stat"), cpu_stat_body).unwrap();
+    }
+    dir
+}
+
+fn cpu_stat_body(
+    usage: u64,
+    user: u64,
+    system: u64,
+    nr_throttled: u64,
+    throttled_usec: u64,
+) -> String {
+    format!(
+        "usage_usec {usage}\nuser_usec {user}\nsystem_usec {system}\n\
+         nice_usec 0\nnr_periods 0\nnr_throttled {nr_throttled}\n\
+         throttled_usec {throttled_usec}\nnr_bursts 0\nburst_usec 0\n"
+    )
+}
+
+#[tokio::test]
+async fn top_cpu_ranks_by_usage_delta_and_excludes_slices() {
+    // Initial values; the test rewrites cpu.stat partway through the
+    // sampling window to simulate CPU consumption during the window.
+    let dir = synthetic_cpu_tree(&[
+        ("system.slice/heavy.service", &cpu_stat_body(0, 0, 0, 0, 0)),
+        ("system.slice/light.service", &cpu_stat_body(0, 0, 0, 0, 0)),
+        // system-getty.slice has its own cpu.stat (slices do); should be
+        // excluded from results despite a delta.
+        (
+            "system.slice/system-getty.slice",
+            &cpu_stat_body(0, 0, 0, 0, 0),
+        ),
+    ]);
+
+    let dir_path = dir.path().to_path_buf();
+    let mutator_path = dir_path.clone();
+
+    // Update cpu.stat 100ms into a 300ms window. Tool reads at ~t=0 and ~t=300,
+    // mutator runs at t=100, so the second read sees the AFTER values.
+    let mutator = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        fs::write(
+            mutator_path.join("system.slice/heavy.service/cpu.stat"),
+            cpu_stat_body(150_000, 100_000, 50_000, 3, 6_000),
+        )
+        .unwrap();
+        fs::write(
+            mutator_path.join("system.slice/light.service/cpu.stat"),
+            cpu_stat_body(15_000, 10_000, 5_000, 0, 0),
+        )
+        .unwrap();
+        fs::write(
+            mutator_path.join("system.slice/system-getty.slice/cpu.stat"),
+            cpu_stat_body(999_999_999, 999_999_999, 0, 0, 0),
+        )
+        .unwrap();
+    });
+
+    let server = CgroupServer::new(dir_path);
+    let resp = server
+        .top_cpu(Parameters(TopCpuParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(300),
+        }))
+        .await
+        .expect("top_cpu should succeed");
+    mutator.await.unwrap();
+    let resp = resp.0;
+
+    assert_eq!(resp.sample_window_ms, 300);
+    let names: Vec<_> = resp.results.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["system.slice/heavy.service", "system.slice/light.service"],
+        "slice should be excluded; heavy outranks light on usage delta"
+    );
+
+    let heavy = &resp.results[0];
+    assert_eq!(heavy.usage_delta_usec, 150_000);
+    // 150_000us / 300ms = 0.5 cores
+    assert!(
+        (heavy.usage_cores - 0.5).abs() < 1e-9,
+        "expected ~0.5 cores, got {}",
+        heavy.usage_cores
+    );
+    assert_eq!(heavy.throttled_periods_delta, 3);
+    assert_eq!(heavy.throttled_usec_delta, 6_000);
+    assert!(!heavy.reset_detected);
+
+    let light = &resp.results[1];
+    assert_eq!(light.usage_delta_usec, 15_000);
+    assert_eq!(light.throttled_periods_delta, 0);
+}
+
+#[tokio::test]
+async fn top_cpu_n_caps_results() {
+    let dir = synthetic_cpu_tree(&[
+        ("system.slice/a.service", &cpu_stat_body(0, 0, 0, 0, 0)),
+        ("system.slice/b.service", &cpu_stat_body(0, 0, 0, 0, 0)),
+        ("system.slice/c.service", &cpu_stat_body(0, 0, 0, 0, 0)),
+    ]);
+    let dir_path = dir.path().to_path_buf();
+    let mutator_path = dir_path.clone();
+    let mutator = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        fs::write(
+            mutator_path.join("system.slice/a.service/cpu.stat"),
+            cpu_stat_body(30_000, 0, 0, 0, 0),
+        )
+        .unwrap();
+        fs::write(
+            mutator_path.join("system.slice/b.service/cpu.stat"),
+            cpu_stat_body(20_000, 0, 0, 0, 0),
+        )
+        .unwrap();
+        fs::write(
+            mutator_path.join("system.slice/c.service/cpu.stat"),
+            cpu_stat_body(10_000, 0, 0, 0, 0),
+        )
+        .unwrap();
+    });
+
+    let server = CgroupServer::new(dir_path);
+    let resp = server
+        .top_cpu(Parameters(TopCpuParams {
+            path: String::new(),
+            n: Some(2),
+            sample_window_ms: Some(250),
+        }))
+        .await
+        .expect("ok");
+    mutator.await.unwrap();
+    assert_eq!(resp.0.results.len(), 2);
+    assert_eq!(resp.0.results[0].path, "system.slice/a.service");
+    assert_eq!(resp.0.results[1].path, "system.slice/b.service");
+}
+
+#[tokio::test]
+async fn top_cpu_zero_window_is_rejected() {
+    let server = CgroupServer::new(real_arch_root());
+    let err = server
+        .top_cpu(Parameters(TopCpuParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(0),
+        }))
+        .await
+        .err()
+        .expect("zero window should fail");
+    assert!(format!("{err}").contains("> 0"), "error was: {err}");
+}
+
+#[tokio::test]
+async fn top_cpu_against_real_arch_returns_static_zero_rates() {
+    // The captured fixture has identical cpu.stat values across both
+    // reads, so every entry should report 0 usage and reset_detected=false.
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .top_cpu(Parameters(TopCpuParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(60),
+        }))
+        .await
+        .expect("ok");
+    let resp = resp.0;
+    assert_eq!(resp.sample_window_ms, 60);
+    // Captured fixture has 4 services in system.slice (none under
+    // system-getty.slice in the fixture). All should appear, all with
+    // zero usage.
+    assert!(!resp.results.is_empty());
+    for entry in &resp.results {
+        assert!(
+            !matches!(entry.kind, CgroupKind::Slice | CgroupKind::Root),
+            "slice/root should be excluded: {} ({:?})",
+            entry.path,
+            entry.kind,
+        );
+        assert_eq!(entry.usage_delta_usec, 0);
+        assert_eq!(entry.usage_cores, 0.0);
+        assert!(!entry.reset_detected);
+    }
+}
+
+#[tokio::test]
+async fn top_cpu_handles_counter_reset() {
+    // Cgroup recreation (service restart) makes counters go backwards.
+    // The tool should flag reset_detected and zero out the rate fields
+    // rather than emitting a giant negative-as-unsigned delta.
+    let dir = synthetic_cpu_tree(&[(
+        "system.slice/restarter.service",
+        &cpu_stat_body(1_000_000, 700_000, 300_000, 5, 50_000),
+    )]);
+    let dir_path = dir.path().to_path_buf();
+    let mutator_path = dir_path.clone();
+    let mutator = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        // Counter went backwards — restart.
+        fs::write(
+            mutator_path.join("system.slice/restarter.service/cpu.stat"),
+            cpu_stat_body(50_000, 30_000, 20_000, 0, 0),
+        )
+        .unwrap();
+    });
+
+    let server = CgroupServer::new(dir_path);
+    let resp = server
+        .top_cpu(Parameters(TopCpuParams {
+            path: String::new(),
+            n: None,
+            sample_window_ms: Some(200),
+        }))
+        .await
+        .expect("ok");
+    mutator.await.unwrap();
+    let entry = &resp.0.results[0];
+    assert!(entry.reset_detected, "should flag reset");
+    assert_eq!(entry.usage_delta_usec, 0);
+    assert_eq!(entry.usage_cores, 0.0);
+    assert_eq!(entry.throttled_periods_delta, 0);
+}
+
+#[tokio::test]
+async fn top_cpu_validates_path_like_other_tools() {
+    let server = CgroupServer::new(real_arch_root());
+
+    let err = server
+        .top_cpu(Parameters(TopCpuParams {
+            path: "/etc".into(),
+            n: None,
+            sample_window_ms: Some(50),
+        }))
+        .await
+        .err()
+        .expect("absolute path should fail");
+    assert!(format!("{err}").contains("absolute"), "error was: {err}");
+
+    let err = server
+        .top_cpu(Parameters(TopCpuParams {
+            path: "system.slice/..".into(),
+            n: None,
+            sample_window_ms: Some(50),
+        }))
+        .await
+        .err()
+        .expect("dotdot should fail");
+    assert!(format!("{err}").contains(".."), "error was: {err}");
 }

@@ -1,6 +1,7 @@
 use crate::mcp::tools::get_pressure::{self, GetPressureParams, GetPressureResponse};
 use crate::mcp::tools::get_unit_stats::{self, GetUnitStatsParams, GetUnitStatsResponse};
 use crate::mcp::tools::recent_oom_events::{self, RecentOomEventsParams, RecentOomEventsResponse};
+use crate::mcp::tools::top_cpu::{self, TopCpuParams, TopCpuResponse};
 use crate::mcp::tools::top_memory::{self, TopMemoryParams, TopMemoryResponse};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -134,6 +135,41 @@ impl CgroupServer {
         Parameters(params): Parameters<RecentOomEventsParams>,
     ) -> Result<Json<RecentOomEventsResponse>, McpError> {
         recent_oom_events::run(&self.cgroup_root, params)
+            .map(Json)
+            .map_err(|e| McpError::internal_error(format!("{e:#}"), None))
+    }
+
+    /// Returns the cgroups using the most CPU under a subtree, sorted
+    /// descending by CPU time consumed during a sampling window. Unlike
+    /// memory, CPU usage only makes sense as a rate, so this tool blocks
+    /// for sample_window_ms (default 500ms) reading cpu.stat before and
+    /// after. Slices and root are excluded since their cpu.stat is summed
+    /// across descendants.
+    #[tool(
+        name = "top_cpu",
+        description = "Returns the cgroups using the most CPU under a given subtree, sorted \
+            descending by CPU time consumed during a sampling window. Use this to answer \
+            'what's using the most CPU.' \
+            \
+            UNLIKE other tools in this server, this one BLOCKS for the duration of the \
+            sample window (default 500ms) — it reads cpu.stat once, sleeps, and reads \
+            again to compute a rate. Shorter windows respond faster but become noisy \
+            below ~50ms; longer windows are more stable but slower. \
+            \
+            Each entry returns CPU consumption as both `usage_cores` (1.0 = one full core \
+            for the whole window) and `usage_delta_usec` (raw microseconds). Throttle \
+            counters are also returned per entry — non-zero `throttled_periods_delta` \
+            means the cgroup wanted more CPU but hit its limit. Pass an empty path for \
+            the whole tree, or a relative path like 'system.slice'. Slices and the root \
+            cgroup are excluded from results because their cpu.stat shows summed \
+            descendant time, not actual leaf consumers. Default n is 10."
+    )]
+    pub async fn top_cpu(
+        &self,
+        Parameters(params): Parameters<TopCpuParams>,
+    ) -> Result<Json<TopCpuResponse>, McpError> {
+        top_cpu::run(&self.cgroup_root, params)
+            .await
             .map(Json)
             .map_err(|e| McpError::internal_error(format!("{e:#}"), None))
     }
