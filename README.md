@@ -10,7 +10,7 @@ PSI is worth calling out specifically because it isn't widely surfaced for agent
 
 ## Status
 
-Early. Five tools shipped. The collector layer (tree walking, stat parsing, rate math) is complete and tested; the MCP layer is wired over stdio.
+Early. Six tools shipped. The collector layer (tree walking, stat parsing, rate math) is complete and tested; the MCP layer is wired over stdio.
 
 ## Planned tools
 
@@ -23,10 +23,10 @@ Shipped:
 - `get_unit_stats`: full stat bundle for one cgroup (cpu, memory, io grouped by controller)
 - `recent_oom_events`: cgroups whose `memory.events.local` has any non-zero counter
 - `top_cpu`: top CPU consumers, computed by sampling `cpu.stat` over a configurable window
+- `top_io`: top IO consumers, computed by sampling `io.stat` over a configurable window, with per-device breakdown
 
 Next up:
 
-- `top_io`: top IO consumers per block device, delta-based
 - `top_pressure`: cgroups sorted by stall percentage on a chosen resource
 - `list_cgroups`: slice/service/scope hierarchy at configurable depth
 - `system_summary`: composed snapshot answering "what's happening on this box"
@@ -86,6 +86,10 @@ Walks a cgroup subtree and returns every cgroup whose `memory.events.local` has 
 ### top_cpu
 
 Returns the cgroups using the most CPU under a subtree, sorted descending by CPU time consumed during a sampling window. Unlike the other tools, this one blocks for the duration of the window (default 500ms, parameterized): it reads `cpu.stat` once, sleeps, and reads again to compute a rate. Each entry returns CPU consumption as both `usage_cores` (1.0 = one full core for the whole window) and `usage_delta_usec` (raw microseconds), plus `throttled_periods_delta` and `throttled_usec_delta` so the agent can distinguish "wants more CPU but capped" from "just has high demand." Slices and the root cgroup are excluded.
+
+### top_io
+
+Returns the cgroups doing the most disk IO under a subtree, sorted descending by total bytes/sec (read + write) during a sampling window. Same blocking-sample shape as `top_cpu` (default 500ms, parameterized) since IO usage only makes sense as a rate. Each entry includes aggregate rates summed across all block devices (`total_bytes_per_sec`, `rbytes_per_sec`, `wbytes_per_sec`, plus IOPS variants) and a `per_device` breakdown for cases where a cgroup hammers one disk but is quiet elsewhere. Cgroups without an enabled IO controller are silently skipped. Slices and the root cgroup are excluded.
 
 ## Tests
 
