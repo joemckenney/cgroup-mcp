@@ -1,6 +1,7 @@
 use cgroup_mcp::collector::tree::CgroupKind;
 use cgroup_mcp::mcp::server::CgroupServer;
 use cgroup_mcp::mcp::tools::get_pressure::GetPressureParams;
+use cgroup_mcp::mcp::tools::get_unit_stats::GetUnitStatsParams;
 use cgroup_mcp::mcp::tools::top_memory::TopMemoryParams;
 use rmcp::handler::server::wrapper::Parameters;
 use std::path::{Path, PathBuf};
@@ -240,4 +241,114 @@ async fn top_memory_validates_path_like_get_pressure() {
         .err()
         .expect("dotdot should fail");
     assert!(format!("{err}").contains(".."));
+}
+
+// ---- get_unit_stats ----
+
+#[tokio::test]
+async fn get_unit_stats_returns_full_bundle_for_a_service() {
+    // dbus-broker.service has all eight stat files captured in the fixture.
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .get_unit_stats(Parameters(GetUnitStatsParams {
+            path: "system.slice/dbus-broker.service".into(),
+        }))
+        .await
+        .expect("get_unit_stats should succeed");
+    let resp = resp.0;
+
+    assert_eq!(resp.path, "system.slice/dbus-broker.service");
+
+    // CPU section
+    let cpu_stat = resp.cpu.stat.expect("cpu.stat present");
+    assert!(cpu_stat.usage_usec > 0);
+    assert!(resp.cpu.pressure.is_some());
+
+    // Memory section: all four fields populated for this fixture.
+    let mem = &resp.memory;
+    assert_eq!(mem.current_bytes, Some(6_144_000));
+    let stat = mem.stat.as_ref().expect("memory.stat present");
+    // Raw map should round-trip kernel field names verbatim.
+    assert_eq!(stat.get("anon"), 4_902_912);
+    assert_eq!(stat.get("file"), 811_008);
+    assert!(
+        stat.raw.contains_key("pgfault"),
+        "memory.stat should retain less-common keys"
+    );
+    let events = mem.events.as_ref().expect("memory.events present");
+    assert_eq!(events.oom, 0);
+    assert_eq!(events.oom_kill, 0);
+    assert!(mem.pressure.is_some());
+
+    // IO section
+    assert!(resp.io.pressure.is_some());
+}
+
+#[tokio::test]
+async fn get_unit_stats_with_empty_path_targets_root_cgroup() {
+    // The captured root has cpu/memory/io stat and pressure files, but no
+    // memory.current and no memory.events — exercising the per-field null
+    // behavior.
+    let server = CgroupServer::new(real_arch_root());
+    let resp = server
+        .get_unit_stats(Parameters(GetUnitStatsParams {
+            path: String::new(),
+        }))
+        .await
+        .expect("get_unit_stats on root should succeed");
+    let resp = resp.0;
+
+    assert_eq!(resp.path, "");
+    assert!(resp.cpu.stat.is_some());
+    assert!(resp.cpu.pressure.is_some());
+
+    assert!(
+        resp.memory.current_bytes.is_none(),
+        "root capture has no memory.current"
+    );
+    assert!(
+        resp.memory.events.is_none(),
+        "root capture has no memory.events"
+    );
+    assert!(resp.memory.stat.is_some());
+    assert!(resp.memory.pressure.is_some());
+
+    assert!(resp.io.stat.is_some());
+    assert!(resp.io.pressure.is_some());
+}
+
+#[tokio::test]
+async fn get_unit_stats_returns_error_for_missing_cgroup() {
+    let server = CgroupServer::new(real_arch_root());
+    let err = server
+        .get_unit_stats(Parameters(GetUnitStatsParams {
+            path: "nonexistent.slice/never.service".into(),
+        }))
+        .await
+        .err()
+        .expect("expected an error");
+    assert!(format!("{err}").contains("not found"), "error was: {err}");
+}
+
+#[tokio::test]
+async fn get_unit_stats_validates_path_like_other_tools() {
+    let server = CgroupServer::new(real_arch_root());
+
+    let err = server
+        .get_unit_stats(Parameters(GetUnitStatsParams {
+            path: "/etc/passwd".into(),
+        }))
+        .await
+        .err()
+        .expect("absolute path should fail");
+    assert!(format!("{err}").contains("absolute"), "error was: {err}");
+
+    let err = server
+        .get_unit_stats(Parameters(GetUnitStatsParams {
+            path: "system.slice/../../etc".into(),
+        }))
+        .await
+        .err()
+        .expect("dotdot should fail");
+    assert!(format!("{err}").contains(".."), "error was: {err}");
 }

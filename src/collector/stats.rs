@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Default)]
 pub struct CpuStat {
     pub usage_usec: u64,
     pub user_usec: u64,
@@ -16,7 +17,7 @@ pub struct CpuStat {
     pub burst_usec: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Default)]
 pub struct MemoryStat {
     pub raw: BTreeMap<String, u64>,
 }
@@ -29,7 +30,7 @@ impl MemoryStat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Default)]
 pub struct MemoryEvents {
     pub low: u64,
     pub high: u64,
@@ -39,7 +40,7 @@ pub struct MemoryEvents {
     pub oom_group_kill: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct IoDeviceStat {
     pub major: u32,
     pub minor: u32,
