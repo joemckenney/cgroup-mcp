@@ -99,6 +99,12 @@ cargo test
 
 Tests cover the collector layer (parsers, tree walker, rate calculation) and the MCP layer (tool schemas, behavior against captured fixtures). The `tests/fixtures/real_arch/` directory holds a sanitized capture from a live cgroup tree, used for snapshot tests and a smoke test that verifies every parser handles real kernel output.
 
+## Releases
+
+Release automation is driven by [release-plz](https://release-plz.dev) reading [conventional commits](https://www.conventionalcommits.org/). On every push to `main`, the workflow inspects commits since the last `v*` tag. If any imply a version bump (`feat:` for minor, `fix:` for patch, `feat!:` or a `BREAKING CHANGE:` footer for major; pre-1.0, breaking changes bump minor), the workflow opens or updates a PR titled `chore: release vX.Y.Z` with the version change in `Cargo.toml` and a generated `CHANGELOG.md` entry. Merging that PR triggers the workflow again, which tags the commit and creates a GitHub Release with the changelog body.
+
+This repo does not publish to crates.io. Releases are GitHub Releases only. Pre-built binaries are not attached yet; install by building from source. Wiring up multi-platform binary distribution and a `curl | sh` install script is a planned addition (likely via [cargo-dist](https://opensource.axo.dev/cargo-dist/)).
+
 ## Design notes
 
 Three-layer architecture: a pure-function collector that reads `/sys/fs/cgroup` and returns typed structs, a thin MCP wrapper that exposes collector output as tools, and the transport (stdio for local use). The collector has no MCP dependency and could be reused as a library.
