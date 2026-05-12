@@ -2,6 +2,8 @@
 name = "cgroup-mcp"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/joemckenney/cgroup-mcp"
+publish = false
 
 [lib]
 name = "cgroup_mcp"
