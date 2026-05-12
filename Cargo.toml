@@ -3,7 +3,10 @@ name = "cgroup-mcp"
 version = "0.1.0"
 edition = "2021"
 repository = "https://github.com/joemckenney/cgroup-mcp"
-publish = false
+# Note: `publish = false` is intentionally NOT set here. release-plz reads
+# this field too and treats `false` as "skip this crate entirely," which
+# silently disables version-bump PRs. The crates.io publish step is
+# suppressed in release-plz.toml instead.
 
 [lib]
 name = "cgroup_mcp"
