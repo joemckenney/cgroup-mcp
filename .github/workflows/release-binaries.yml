@@ -8,9 +8,15 @@ on:
   push:
     tags: ['v*']
   # Manual override so we can rebuild binaries for an existing tag
-  # without re-tagging. Useful for the v0.1.0 backfill and as a generic
-  # escape hatch when the auto-chain fails.
+  # without re-tagging. Dispatch against `main` and pass the tag as
+  # input. (Dispatching against the tag itself fails when the tag
+  # predates this trigger being added to the file.)
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write  # required to upload assets to the release
@@ -28,6 +34,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # For tag-push: defaults to the pushed tag. For workflow_dispatch
+          # against main: uses the user-provided tag input so we build
+          # from the right source commit.
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -44,8 +55,13 @@ jobs:
         run: cross build --release --target ${{ matrix.target }} --locked
 
       - name: Package archive
+        env:
+          # Source the tag from input on manual dispatch, otherwise from
+          # the pushed ref. Use this for both the tarball name and the
+          # upload target.
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          pkg_name="cgroup-mcp-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          pkg_name="cgroup-mcp-${TAG}-${{ matrix.target }}"
           mkdir -p "$pkg_name"
           cp "target/${{ matrix.target }}/release/cgroup-mcp" "$pkg_name/"
           tar -czf "${pkg_name}.tar.gz" "$pkg_name"
@@ -57,6 +73,8 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
+          # Required when triggered manually: tag != current ref.
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             ${{ env.ARCHIVE }}
             ${{ env.CHECKSUM }}
