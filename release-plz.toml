@@ -11,8 +11,13 @@
 # We do not publish to crates.io. Distribution is GitHub Releases only.
 
 [workspace]
-# Skip `cargo publish` entirely. Cargo.toml also has `publish = false`
-# as a belt-and-suspenders safeguard against accidental publishes.
+# Skip `cargo publish` entirely.
+#
+# Why this lives only here and NOT in Cargo.toml: release-plz reads
+# Cargo.toml's `publish` field and interprets `false` as "skip this
+# crate entirely," which silently disables the version-bump release PR.
+# Setting `publish = false` here suppresses the crates.io step without
+# making release-plz think the crate is non-releasable.
 publish = false
 
 # Create the v* git tag when the release PR is merged.
