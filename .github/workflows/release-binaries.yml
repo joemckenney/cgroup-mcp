@@ -7,6 +7,10 @@ name: Release binaries
 on:
   push:
     tags: ['v*']
+  # Manual override so we can rebuild binaries for an existing tag
+  # without re-tagging. Useful for the v0.1.0 backfill and as a generic
+  # escape hatch when the auto-chain fails.
+  workflow_dispatch:
 
 permissions:
   contents: write  # required to upload assets to the release
